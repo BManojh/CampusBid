@@ -37,6 +37,102 @@ function getTimeLeft(auctionEndsAt, now) {
   return `${hours}h ${minutes}m`;
 }
 
+function AuthModal({ mode, onClose, onModeChange, onAuthenticated }) {
+  const [form, setForm] = useState({ name: "", email: "", password: "" });
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    setIsSubmitting(true);
+    setError("");
+
+    try {
+      const endpoint = mode === "login" ? "login" : "register";
+      const response = await axios.post(`${API_URL}/api/auth/${endpoint}`, form);
+      onAuthenticated(response.data.user);
+      onClose();
+    } catch (requestError) {
+      setError(
+        requestError.response?.data?.message ??
+          "Authentication failed. Please try again."
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="auth-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <button className="modal-close" type="button" onClick={onClose} aria-label="Close">
+          ×
+        </button>
+        <span className="eyebrow">{mode === "login" ? "WELCOME BACK" : "JOIN CAMPUSBID"}</span>
+        <h2 id="auth-title">{mode === "login" ? "Log in to CampusBid" : "Create your account"}</h2>
+        <p className="modal-copy">
+          {mode === "login"
+            ? "Sign in to bid, sell, and manage your campus activity."
+            : "Use your student account details to get started."}
+        </p>
+        <form className="modal-form" onSubmit={handleSubmit}>
+          {mode === "register" && (
+            <label>
+              Name
+              <input
+                required
+                value={form.name}
+                onChange={(event) => setForm({ ...form, name: event.target.value })}
+              />
+            </label>
+          )}
+          <label>
+            Email
+            <input
+              required
+              type="email"
+              value={form.email}
+              onChange={(event) => setForm({ ...form, email: event.target.value })}
+            />
+          </label>
+          <label>
+            Password
+            <input
+              required
+              minLength={8}
+              type="password"
+              value={form.password}
+              onChange={(event) => setForm({ ...form, password: event.target.value })}
+            />
+          </label>
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <button className="button button-primary modal-submit" disabled={isSubmitting}>
+            {isSubmitting ? "Please wait..." : mode === "login" ? "Log in" : "Create account"}
+          </button>
+        </form>
+        <button
+          className="modal-switch"
+          type="button"
+          onClick={() => {
+            setError("");
+            onModeChange(mode === "login" ? "register" : "login");
+          }}
+        >
+          {mode === "login"
+            ? "Need an account? Register"
+            : "Already have an account? Log in"}
+        </button>
+      </section>
+    </div>
+  );
+}
+
 function App() {
   const [items, setItems] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -45,6 +141,14 @@ function App() {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("All Items");
   const [sortBy, setSortBy] = useState("ending");
+  const [authMode, setAuthMode] = useState(null);
+  const [user, setUser] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("campusbid_user"));
+    } catch {
+      return null;
+    }
+  });
 
   useEffect(() => {
     const initialUpdate = window.setTimeout(() => setNow(Date.now()), 0);
@@ -105,14 +209,9 @@ function App() {
     return result;
   }, [items, search, category, sortBy]);
 
-  function handleSellClick() {
-    alert("The Sell an Item form will be added in a later step.");
-  }
-
-  function handleBidClick(item) {
-    alert(
-      `You selected "${item.title}". Login and live bidding will be connected in a later step.`
-    );
+  function handleAuthenticated(nextUser) {
+    setUser(nextUser);
+    localStorage.setItem("campusbid_user", JSON.stringify(nextUser));
   }
 
   return (
@@ -130,15 +229,24 @@ function App() {
         </nav>
 
         <div className="nav-actions">
-          <button className="button button-outline" onClick={handleSellClick}>
+          <button className="button button-outline" onClick={() => setAuthMode("login")}>
             + Sell an Item
           </button>
-          <button
-            className="button button-primary"
-            onClick={() => alert("Login and registration will be added later.")}
-          >
-            Login
-          </button>
+          {user ? (
+            <button
+              className="button button-primary"
+              onClick={() => {
+                setUser(null);
+                localStorage.removeItem("campusbid_user");
+              }}
+            >
+              Log out
+            </button>
+          ) : (
+            <button className="button button-primary" onClick={() => setAuthMode("login")}>
+              Login
+            </button>
+          )}
         </div>
       </header>
 
@@ -160,7 +268,7 @@ function App() {
               <a href="#marketplace" className="button button-primary">
                 Explore Auctions <span aria-hidden="true">→</span>
               </a>
-              <button className="button button-outline" onClick={handleSellClick}>
+              <button className="button button-outline" onClick={() => setAuthMode("login")}>
                 Start Selling
               </button>
             </div>
@@ -250,13 +358,6 @@ function App() {
                     {item.emoji}
                   </span>
                   <span className="condition-badge">{item.condition}</span>
-                  <button
-                    className="favorite-button"
-                    aria-label={`Save ${item.title}`}
-                    onClick={() => alert("Watchlist functionality will be added later.")}
-                  >
-                    ♡
-                  </button>
                 </div>
 
                 <div className="item-details">
@@ -275,10 +376,7 @@ function App() {
                         ₹{item.price.toLocaleString("en-IN")}
                       </strong>
                     </div>
-                    <button
-                      className="bid-button"
-                      onClick={() => handleBidClick(item)}
-                    >
+                    <button className="bid-button" onClick={() => setAuthMode("login")}>
                       View auction →
                     </button>
                   </div>
@@ -324,6 +422,14 @@ function App() {
         <p>A smarter way to exchange essentials on campus.</p>
         <span>CampusBid · Project prototype</span>
       </footer>
+      {authMode && (
+        <AuthModal
+          mode={authMode}
+          onClose={() => setAuthMode(null)}
+          onModeChange={setAuthMode}
+          onAuthenticated={handleAuthenticated}
+        />
+      )}
     </div>
   );
 }
