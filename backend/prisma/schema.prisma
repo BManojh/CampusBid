@@ -1,8 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
   provider = "prisma-client"
   output   = "../generated/prisma"
@@ -10,4 +5,120 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+}
+
+enum UserRole {
+  STUDENT
+  ADMIN
+}
+
+enum ListingStatus {
+  DRAFT
+  OPEN
+  CLOSED
+  CANCELLED
+  UNSOLD
+}
+
+enum TransactionStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  HANDOVER_SCHEDULED
+  COMPLETED
+  CANCELLED
+}
+
+enum NotificationType {
+  OUTBID
+  AUCTION_CLOSED
+  SELLER_DECISION
+  HANDOVER_UPDATE
+  SYSTEM
+}
+
+model User {
+  id                 String         @id @default(uuid())
+  name               String
+  email              String         @unique
+  passwordHash       String
+  role               UserRole       @default(STUDENT)
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+  listings           Listing[]      @relation("SellerListings")
+  bids               Bid[]
+  buyerTransactions  Transaction[]  @relation("BuyerTransactions")
+  sellerTransactions Transaction[]  @relation("SellerTransactions")
+  notifications      Notification[]
+}
+
+model Listing {
+  id                    String        @id @default(uuid())
+  sellerId              String
+  title                 String
+  category              String
+  description           String
+  condition             String
+  startingPricePaise    Int
+  minimumIncrementPaise Int
+  currentBidPaise       Int?
+  auctionEndsAt         DateTime
+  status                ListingStatus @default(OPEN)
+  winnerBidId           String?       @unique
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+  seller                User          @relation("SellerListings", fields: [sellerId], references: [id])
+  bids                  Bid[]
+  winnerBid             Bid?          @relation("WinningBid", fields: [winnerBidId], references: [id])
+  transaction           Transaction?
+
+  @@index([status, auctionEndsAt])
+  @@index([category, status])
+  @@index([sellerId])
+}
+
+model Bid {
+  id          String   @id @default(uuid())
+  listingId   String
+  bidderId    String
+  amountPaise Int
+  createdAt   DateTime @default(now())
+  listing     Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  bidder      User     @relation(fields: [bidderId], references: [id])
+  winningFor  Listing? @relation("WinningBid")
+
+  @@index([listingId, amountPaise, createdAt])
+  @@index([bidderId])
+}
+
+model Transaction {
+  id               String            @id @default(uuid())
+  listingId        String            @unique
+  buyerId          String
+  sellerId         String
+  status           TransactionStatus @default(PENDING)
+  sellerResponseAt DateTime?
+  handoverAt       DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  listing          Listing           @relation(fields: [listingId], references: [id])
+  buyer            User              @relation("BuyerTransactions", fields: [buyerId], references: [id])
+  seller           User              @relation("SellerTransactions", fields: [sellerId], references: [id])
+
+  @@index([buyerId, status])
+  @@index([sellerId, status])
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  type      NotificationType
+  title     String
+  message   String
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
 }
