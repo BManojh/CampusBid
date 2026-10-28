@@ -147,6 +147,31 @@ function ListingDetail({ user, onLogin }) {
   const [error, setError] = useState("");
   useEffect(() => { api.get(`/listings/${listingId}`).then(({ data }) => setListing(data.data)).catch(() => setError("Listing not found.")); }, [listingId]);
   useEffect(() => { api.get(`/listings/${listingId}/questions`).then(({ data }) => setQuestions(data.data)).catch(() => {}); }, [listingId]);
+  async function placeAutoBid(event) {
+    event.preventDefault();
+    if (!user) return onLogin();
+    try {
+      const { data } = await api.post(`/listings/${listingId}/auto-bid`, { maxAmount: maxBid }, { headers: authHeaders() });
+      setMaxBid("");
+      setMessage(`Automatic bidding is active up to ₹${data.data.maxAmount.toLocaleString("en-IN")}.`);
+      setListing((current) => current ? { ...current, currentBid: data.data.amount, minimumNextBid: data.data.amount + current.minimumIncrement, auctionEndsAt: data.data.auctionEndsAt } : current);
+    } catch (requestError) { setError(requestError.response?.data?.message ?? "Automatic bidding could not be enabled."); }
+  }
+  async function askQuestion(event) {
+    event.preventDefault();
+    try {
+      const { data } = await api.post(`/listings/${listingId}/questions`, { body: question }, { headers: authHeaders() });
+      setQuestions((current) => [...current, data.data]);
+      setQuestion("");
+    } catch (requestError) { setError(requestError.response?.data?.message ?? "Question could not be posted."); }
+  }
+  async function answerQuestion(id) {
+    try {
+      const { data } = await api.patch(`/questions/${id}`, { answer: answerDrafts[id] }, { headers: authHeaders() });
+      setQuestions((current) => current.map((item) => item.id === id ? data.data : item));
+      setAnswerDrafts((current) => ({ ...current, [id]: "" }));
+    } catch (requestError) { setError(requestError.response?.data?.message ?? "Answer could not be saved."); }
+  }
   useEffect(() => {
     if (!listingId || !user) return undefined;
     const socket = io(API_URL, { auth: { token: localStorage.getItem("campusbid_token") } });
@@ -155,31 +180,6 @@ function ListingDetail({ user, onLogin }) {
       if (event.listingId === listingId) {
         setListing((current) => current ? { ...current, currentBid: event.amount, minimumNextBid: event.amount + current.minimumIncrement, bids: current.bids + 1 } : current);
         if (event.auctionEndsAt) setListing((current) => current ? { ...current, auctionEndsAt: event.auctionEndsAt } : current);
-      }
-      async function placeAutoBid(event) {
-        event.preventDefault();
-        if (!user) return onLogin();
-        try {
-          const { data } = await api.post(`/listings/${listingId}/auto-bid`, { maxAmount: maxBid }, { headers: authHeaders() });
-          setMaxBid("");
-          setMessage(`Automatic bidding is active up to ₹${data.data.maxAmount.toLocaleString("en-IN")}.`);
-          setListing((current) => current ? { ...current, currentBid: data.data.amount, minimumNextBid: data.data.amount + current.minimumIncrement, auctionEndsAt: data.data.auctionEndsAt } : current);
-        } catch (requestError) { setError(requestError.response?.data?.message ?? "Automatic bidding could not be enabled."); }
-      }
-      async function askQuestion(event) {
-        event.preventDefault();
-        try {
-          const { data } = await api.post(`/listings/${listingId}/questions`, { body: question }, { headers: authHeaders() });
-          setQuestions((current) => [...current, data.data]);
-          setQuestion("");
-        } catch (requestError) { setError(requestError.response?.data?.message ?? "Question could not be posted."); }
-      }
-      async function answerQuestion(id) {
-        try {
-          const { data } = await api.patch(`/questions/${id}`, { answer: answerDrafts[id] }, { headers: authHeaders() });
-          setQuestions((current) => current.map((item) => item.id === id ? data.data : item));
-          setAnswerDrafts((current) => ({ ...current, [id]: "" }));
-        } catch (requestError) { setError(requestError.response?.data?.message ?? "Answer could not be saved."); }
       }
     });
     return () => { socket.emit("auction:leave", listingId); socket.disconnect(); };
@@ -235,7 +235,12 @@ function Transactions() {
   async function load() {
     try { const { data } = await api.get("/transactions/mine", { headers: authHeaders() }); setTransactions(data.data); } catch { setError("Transactions could not be loaded."); }
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    const socket = io(API_URL, { auth: { token: localStorage.getItem("campusbid_token") } });
+    socket.on("notification:new", load);
+    return () => socket.disconnect();
+  }, []);
   async function decide(id, decision) {
     try { await api.patch(`/transactions/${id}/decision`, { decision }, { headers: authHeaders() }); load(); } catch (requestError) { setError(requestError.response?.data?.message ?? "Decision could not be saved."); }
   }
@@ -316,7 +321,7 @@ function App() {
   const navigate = useNavigate();
   function authenticated(nextUser, token) { const normalizedUser = { ...nextUser, role: effectiveRole(nextUser.role) }; setUser(normalizedUser); localStorage.setItem("campusbid_user", JSON.stringify(normalizedUser)); localStorage.setItem("campusbid_token", token); navigate("/dashboard"); }
   function logout() { setUser(null); localStorage.removeItem("campusbid_user"); localStorage.removeItem("campusbid_token"); navigate("/"); }
-  return <div className="app"><header className="navbar"><Link className="brand" to="/"><span className="brand-icon">C</span>Campus<span className="brand-highlight">Bid</span></Link><nav className="nav-links"><Link to="/">Browse items</Link>{user && <Link to="/dashboard">Dashboard</Link>}{user && <Link to="/transactions">Transactions</Link>}{user && <Link to="/notifications">Notifications</Link>}{user?.role === "BUYER" && <Link to="/saved-searches">Saved searches</Link>}{user && <Link to="/profile">Profile</Link>}{user?.role === "ADMIN" && <Link to="/admin">Admin</Link>}</nav><div className="nav-actions">{user ? <><span className="nav-user">{user.name} · {user.role}</span>{(user.role === "SELLER" || user.role === "ADMIN") && <Link className="button button-outline" to="/listings/new">+ Sell an item</Link>}<button className="button button-primary" onClick={logout}>Log out</button></> : <button className="button button-primary" onClick={() => setAuthMode("login")}>Log in</button>}</div></header><Routes><Route path="/" element={<Marketplace user={user} onLogin={() => setAuthMode("login")} />} /><Route path="/listings/:listingId" element={<ListingDetail user={user} onLogin={() => setAuthMode("login")} />} /><Route path="/listings/new" element={<Protected user={user} roles={["SELLER", "ADMIN"]}><CreateListing /></Protected>} /><Route path="/dashboard" element={<Protected user={user}><RoleDashboard user={user} onBrowse={() => navigate("/")} onCreateListing={() => navigate("/listings/new")} /></Protected>} /><Route path="/transactions" element={<Protected user={user}><Transactions /></Protected>} /><Route path="/notifications" element={<Protected user={user}><Notifications /></Protected>} /><Route path="/saved-searches" element={<Protected user={user} roles={["BUYER"]}><SavedSearches /></Protected>} /><Route path="/profile" element={<Protected user={user}><Profile /></Protected>} /><Route path="/admin" element={<Protected user={user} roles={["ADMIN"]}><AdminConsole /></Protected>} /><Route path="*" element={<main className="section"><h1>Page not found</h1><Link to="/">Return to marketplace</Link></main>} /></Routes><footer className="footer"><span>CampusBid · Fixed-deadline campus auctions</span><span>Payments and delivery are coordinated separately by users.</span></footer>{authMode && <AuthModal mode={authMode} onClose={() => setAuthMode(null)} onModeChange={setAuthMode} onAuthenticated={authenticated} />}</div>;
+  return <div className="app"><header className="navbar"><Link className="brand" to="/"><span className="brand-icon">C</span>Campus<span className="brand-highlight">Bid</span></Link><nav className="nav-links"><Link to="/">Browse items</Link>{user && <Link to="/dashboard">Dashboard</Link>}{user && <Link to="/transactions">Transactions</Link>}{user && <Link to="/notifications">Notifications</Link>}{user?.role === "BUYER" && <Link to="/saved-searches">Saved searches</Link>}{user && <Link to="/profile">Profile</Link>}{user?.role === "ADMIN" && <Link to="/admin">Admin</Link>}</nav><div className="nav-actions">{user ? <><span className="nav-user">{user.name} · {user.role}</span>{(user.role === "SELLER" || user.role === "ADMIN") && <Link className="button button-outline" to="/listings/new">+ Sell an item</Link>}<button className="button button-primary" onClick={logout}>Log out</button></> : <button className="button button-primary" onClick={() => setAuthMode("login")}>Log in</button>}</div></header><Routes><Route path="/" element={<Marketplace user={user} onLogin={() => setAuthMode("login")} />} /><Route path="/listings/:listingId" element={<ListingDetail user={user} onLogin={() => setAuthMode("login")} />} /><Route path="/listings/new" element={<Protected user={user} roles={["SELLER", "ADMIN"]}><CreateListing /></Protected>} /><Route path="/dashboard" element={<Protected user={user}><RoleDashboard user={user} onBrowse={() => navigate("/")} onCreateListing={() => navigate("/listings/new")} onTransactions={() => navigate("/transactions")} onNotifications={() => navigate("/notifications")} /></Protected>} /><Route path="/transactions" element={<Protected user={user}><Transactions /></Protected>} /><Route path="/notifications" element={<Protected user={user}><Notifications /></Protected>} /><Route path="/saved-searches" element={<Protected user={user} roles={["BUYER"]}><SavedSearches /></Protected>} /><Route path="/profile" element={<Protected user={user}><Profile /></Protected>} /><Route path="/admin" element={<Protected user={user} roles={["ADMIN"]}><AdminConsole /></Protected>} /><Route path="*" element={<main className="section"><h1>Page not found</h1><Link to="/">Return to marketplace</Link></main>} /></Routes><footer className="footer"><span>CampusBid · Fixed-deadline campus auctions</span><span>Payments and delivery are coordinated separately by users.</span></footer>{authMode && <AuthModal mode={authMode} onClose={() => setAuthMode(null)} onModeChange={setAuthMode} onAuthenticated={authenticated} />}</div>;
 }
 
 function Notifications() {
@@ -337,12 +342,16 @@ function Notifications() {
     return () => socket.disconnect();
   }, []);
   async function markRead(id) {
-    await api.patch(`/notifications/${id}/read`, {}, { headers: authHeaders() });
-    setNotifications((current) => current.map((notification) => notification.id === id ? { ...notification, readAt: new Date().toISOString() } : notification));
+    try {
+      await api.patch(`/notifications/${id}/read`, {}, { headers: authHeaders() });
+      setNotifications((current) => current.map((notification) => notification.id === id ? { ...notification, readAt: new Date().toISOString() } : notification));
+    } catch { setError("Notification could not be marked as read."); }
   }
   async function markAllRead() {
-    await api.patch("/notifications/read-all", {}, { headers: authHeaders() });
-    setNotifications((current) => current.map((notification) => ({ ...notification, readAt: new Date().toISOString() })));
+    try {
+      await api.patch("/notifications/read-all", {}, { headers: authHeaders() });
+      setNotifications((current) => current.map((notification) => ({ ...notification, readAt: new Date().toISOString() })));
+    } catch { setError("Notifications could not be marked as read."); }
   }
   return <main className="section"><div className="section-heading"><div><span className="eyebrow">YOUR ACTIVITY</span><h1>Notifications</h1><p>Private updates for your bids, listings, auctions, and handovers.</p></div>{notifications.some((notification) => !notification.readAt) && <button className="button button-outline" onClick={markAllRead}>Mark all as read</button>}</div>{error && <p className="form-error">{error}</p>}{notifications.length === 0 ? <div className="empty-state"><span>✓</span><h3>You're all caught up</h3><p>Important auction and transaction updates will appear here.</p></div> : <div className="notification-list">{notifications.map((notification) => <article className={`notification ${notification.readAt ? "" : "notification-unread"}`} key={notification.id}><div><strong>{notification.title}</strong><p>{notification.message}</p><small>{new Date(notification.createdAt).toLocaleString()}</small></div>{!notification.readAt && <button className="button button-outline" onClick={() => markRead(notification.id)}>Mark read</button>}</article>)}</div>}</main>;
 }

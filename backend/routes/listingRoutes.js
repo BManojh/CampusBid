@@ -118,6 +118,37 @@ router.post("/", requireAuth, requireRole("SELLER", "ADMIN"), async (req, res, n
       },
       include: { images: true, _count: { select: { bids: true } }, seller: { select: { id: true, name: true } } },
     });
+    const savedSearches = await prisma.savedSearch.findMany({
+      where: {
+        userId: { not: req.user.id },
+        AND: [{
+          OR: [
+            { category: null },
+            { category: listing.category },
+          ],
+        }, ...(req.body.title ? [{
+          OR: [
+            { query: null },
+            { query: { contains: req.body.title.trim().split(/\s+/)[0], mode: "insensitive" } },
+          ],
+        }] : [])],
+      },
+      select: { id: true, userId: true, name: true, maxPricePaise: true },
+    });
+    const matchingSearches = savedSearches.filter((search) => !search.maxPricePaise || search.maxPricePaise >= listing.startingPricePaise);
+    if (matchingSearches.length) {
+      await prisma.notification.createMany({
+        data: matchingSearches.map((search) => ({
+          userId: search.userId,
+          type: "SYSTEM",
+          entityId: listing.id,
+          title: `New match for ${search.name}`,
+          message: `${listing.title} matches one of your saved searches.`,
+          dedupeKey: `saved-search:${search.id}:listing:${listing.id}`,
+        })),
+        skipDuplicates: true,
+      });
+    }
     res.status(201).json({ success: true, data: listingResponse(listing) });
   } catch (error) {
     next(error);
@@ -276,12 +307,14 @@ router.post("/:listingId/bids", requireAuth, requireRole("BUYER"), async (req, r
         });
       }
       let automaticBid = null;
-      const competingAutoBid = await tx.autoBid.findFirst({
-        where: { listingId: listing.id, bidderId: { not: req.user.id }, active: true, maxPaise: { gte: amountPaise + listing.minimumIncrementPaise } },
-        orderBy: [{ maxPaise: "desc" }, { createdAt: "asc" }],
-      });
-      if (competingAutoBid) {
-        const automaticAmount = Math.min(competingAutoBid.maxPaise, amountPaise + listing.minimumIncrementPaise);
+      let automaticAmount = amountPaise;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const competingAutoBid = await tx.autoBid.findFirst({
+          where: { listingId: listing.id, bidderId: { not: automaticBid?.bidderId ?? req.user.id }, active: true, maxPaise: { gte: automaticAmount + listing.minimumIncrementPaise } },
+          orderBy: [{ maxPaise: "desc" }, { createdAt: "asc" }],
+        });
+        if (!competingAutoBid) break;
+        automaticAmount = Math.min(competingAutoBid.maxPaise, automaticAmount + listing.minimumIncrementPaise);
         automaticBid = await tx.bid.create({ data: { listingId: listing.id, bidderId: competingAutoBid.bidderId, amountPaise: automaticAmount } });
         await tx.listing.update({ where: { id: listing.id }, data: { currentBidPaise: automaticAmount } });
       }

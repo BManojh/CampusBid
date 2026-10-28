@@ -28,7 +28,7 @@ const io = new Server(httpServer, {
 configureSocket(io);
 app.set("io", io);
 // Allow Express to read JSON request bodies.
-app.use(helmet());
+app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 app.use(express.json({ limit: "1mb" }));
 app.use(cors({ origin: process.env.FRONTEND_URL || "http://localhost:5173" }));
 app.use("/uploads", express.static(path.join(__dirname, "uploads"), {
@@ -67,5 +67,5 @@ app.use((error, req, res, next) => {
 // Start the server.
 httpServer.listen(PORT, () => {
   console.log(`CampusBid backend running at http://localhost:${PORT}`);
-  startAuctionWorker();
+  startAuctionWorker(io);
 });

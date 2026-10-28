@@ -1,6 +1,6 @@
 const { getPrisma } = require("../db");
 
-async function finalizeExpiredAuctions() {
+async function finalizeExpiredAuctions(io) {
   const prisma = await getPrisma();
   const expired = await prisma.listing.findMany({
     where: { status: "OPEN", auctionEndsAt: { lte: new Date() } },
@@ -61,7 +61,10 @@ async function finalizeExpiredAuctions() {
               dedupeKey: `auction-closed:buyer:${candidate.id}`,
             },
           });
+          io?.to(`user:${listing.sellerId}`).emit("notification:new", { type: "AUCTION_CLOSED", title: "Auction closed", transactionId: transaction.id });
+          io?.to(`user:${winningBid.bidderId}`).emit("notification:new", { type: "AUCTION_CLOSED", title: "You won an auction", transactionId: transaction.id });
         }
+        io?.to(`auction:${candidate.id}`).emit("auction:closed", { listingId: candidate.id, hasWinner: Boolean(winningBid) });
       });
     } catch (error) {
       console.error(`Auction finalization failed for ${candidate.id}:`, error.message);
@@ -69,8 +72,8 @@ async function finalizeExpiredAuctions() {
   }
 }
 
-function startAuctionWorker() {
-  const run = () => finalizeExpiredAuctions().catch((error) => console.error("Auction worker failed:", error.message));
+function startAuctionWorker(io) {
+  const run = () => finalizeExpiredAuctions(io).catch((error) => console.error("Auction worker failed:", error.message));
   run();
   return setInterval(run, 30_000);
 }
