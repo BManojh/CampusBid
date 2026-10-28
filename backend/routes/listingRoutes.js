@@ -242,13 +242,53 @@ router.post("/:listingId/auto-bid", requireAuth, requireRole("BUYER"), async (re
       const bid = await tx.bid.create({ data: { listingId: listing.id, bidderId: req.user.id, amountPaise } });
       const extension = listing.auctionEndsAt.getTime() - Date.now() <= 30_000 ? new Date(Date.now() + 60_000) : listing.auctionEndsAt;
       await tx.listing.update({ where: { id: listing.id }, data: { currentBidPaise: amountPaise, auctionEndsAt: extension } });
-      return { autoBid, bid, auctionEndsAt: extension };
+      const otherBidders = await tx.bid.findMany({
+        where: { listingId: listing.id, bidderId: { not: req.user.id } },
+        distinct: ["bidderId"],
+        select: { bidderId: true },
+      });
+      await tx.notification.create({
+        data: {
+          userId: listing.sellerId,
+          type: "SYSTEM",
+          entityId: listing.id,
+          title: "New automatic bid received",
+          message: `An automatic bid was placed on ${listing.title}.`,
+          dedupeKey: `auto-bid:seller:${bid.id}`,
+        },
+      });
+      if (otherBidders.length) {
+        await tx.notification.createMany({
+          data: otherBidders.map(({ bidderId }) => ({
+            userId: bidderId,
+            type: "OUTBID",
+            entityId: listing.id,
+            title: "New bid placed",
+            message: `Another buyer placed a higher bid on ${listing.title}.`,
+            dedupeKey: `auto-bid:activity:${bid.id}:${bidderId}`,
+          })),
+          skipDuplicates: true,
+        });
+      }
+      return { autoBid, bid, auctionEndsAt: extension, outbidUserIds: otherBidders.map(({ bidderId }) => bidderId), sellerId: listing.sellerId };
     });
     req.app.get("io")?.to(`auction:${req.params.listingId}`).emit("auction:bid", {
       listingId: req.params.listingId,
       amount: result.bid.amountPaise / 100,
       auctionEndsAt: result.auctionEndsAt,
       createdAt: result.bid.createdAt,
+    });
+    req.app.get("io")?.to(`user:${result.sellerId}`).emit("notification:new", {
+      type: "SYSTEM",
+      title: "New automatic bid received",
+      listingId: req.params.listingId,
+    });
+    result.outbidUserIds.forEach((userId) => {
+      req.app.get("io")?.to(`user:${userId}`).emit("notification:new", {
+        type: "OUTBID",
+        title: "New bid placed",
+        listingId: req.params.listingId,
+      });
     });
     res.status(201).json({ success: true, data: { amount: result.bid.amountPaise / 100, maxAmount: result.autoBid.maxPaise / 100, auctionEndsAt: result.auctionEndsAt } });
   } catch (error) {
