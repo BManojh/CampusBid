@@ -12,24 +12,58 @@ const categories = [
   "Calculators",
 ];
 
+const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:5000";
+
+function getTimeLeft(auctionEndsAt, now) {
+  if (now === null) {
+    return "Calculating...";
+  }
+
+  const remainingMs = new Date(auctionEndsAt).getTime() - now;
+
+  if (remainingMs <= 0) {
+    return "Ended";
+  }
+
+  const totalMinutes = Math.floor(remainingMs / 60000);
+  const days = Math.floor(totalMinutes / (60 * 24));
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+  const minutes = totalMinutes % 60;
+
+  if (days > 0) {
+    return `${days}d ${hours}h`;
+  }
+
+  return `${hours}h ${minutes}m`;
+}
+
 function App() {
   const [items, setItems] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
+  const [now, setNow] = useState(null);
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("All Items");
   const [sortBy, setSortBy] = useState("ending");
 
   useEffect(() => {
+    const initialUpdate = window.setTimeout(() => setNow(Date.now()), 0);
+    const timer = window.setInterval(() => setNow(Date.now()), 60000);
+    return () => {
+      window.clearTimeout(initialUpdate);
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
     async function loadListings() {
       try {
-        const response = await axios.get("http://localhost:5000/api/listings");
+        const response = await axios.get(`${API_URL}/api/listings`);
         setItems(
           response.data.data.map((listing) => ({
             ...listing,
             price: listing.currentBid ?? listing.startingPrice,
-            bids: listing.bidCount ?? 0,
-            timeLeft: listing.timeLeft ?? "Auction time unavailable",
+            bids: listing.bids ?? 0,
             emoji: listing.emoji ?? "📦",
             color: listing.color ?? "lavender",
           }))
@@ -61,7 +95,11 @@ function App() {
     } else if (sortBy === "price-high") {
       result.sort((a, b) => b.price - a.price);
     } else {
-      result.sort((a, b) => a.timeLeft.localeCompare(b.timeLeft));
+      result.sort(
+        (a, b) =>
+          new Date(a.auctionEndsAt).getTime() -
+          new Date(b.auctionEndsAt).getTime()
+      );
     }
 
     return result;
@@ -226,7 +264,7 @@ function App() {
                   <h3>{item.title}</h3>
 
                   <div className="item-meta">
-                    <span>◷ {item.timeLeft}</span>
+                    <span>◷ {getTimeLeft(item.auctionEndsAt, now)}</span>
                     <span>{item.bids} bids</span>
                   </div>
 
