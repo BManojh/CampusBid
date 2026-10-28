@@ -1,0 +1,13 @@
+@'
+node_modules/
+**/node_modules/
+.env
+.env.*
+!.env.example
+dist/
+build/
+*.log
+.vscode/
+.DS_Store
+Thumbs.db
+'@ | Set-Content -Encoding utf8 .gitignore
