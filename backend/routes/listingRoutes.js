@@ -267,13 +267,11 @@ router.post("/:listingId/bids", requireAuth, requireRole("BUYER"), async (req, r
       if (!listing) throw Object.assign(new Error("Listing not found."), { status: 404, code: "LISTING_NOT_FOUND" });
       if (listing.sellerId === req.user.id) throw Object.assign(new Error("Sellers cannot bid on their own listings."), { status: 403, code: "SELLER_CANNOT_BID" });
       if (listing.status !== "OPEN" || listing.auctionEndsAt.getTime() <= Date.now()) throw Object.assign(new Error("This auction is closed."), { status: 409, code: "AUCTION_CLOSED" });
-      const previousBid = listing.currentBidPaise === null
-        ? null
-        : await tx.bid.findFirst({
-          where: { listingId: listing.id },
-          orderBy: [{ amountPaise: "desc" }, { createdAt: "asc" }],
-          select: { bidderId: true, amountPaise: true },
-        });
+      const otherBidders = await tx.bid.findMany({
+        where: { listingId: listing.id, bidderId: { not: req.user.id } },
+        distinct: ["bidderId"],
+        select: { bidderId: true },
+      });
       const current = listing.currentBidPaise ?? listing.startingPricePaise;
       const minimum = listing.currentBidPaise === null ? current : current + listing.minimumIncrementPaise;
       if (amountPaise < minimum) throw Object.assign(new Error(`Bid must be at least ₹${(minimum / 100).toFixed(2)}.`), { status: 409, code: "BID_TOO_LOW" });
@@ -294,16 +292,17 @@ router.post("/:listingId/bids", requireAuth, requireRole("BUYER"), async (req, r
           dedupeKey: `bid:seller:${bid.id}`,
         },
       });
-      if (previousBid && previousBid.bidderId !== req.user.id) {
-        await tx.notification.create({
-          data: {
-            userId: previousBid.bidderId,
+      if (otherBidders.length) {
+        await tx.notification.createMany({
+          data: otherBidders.map(({ bidderId }) => ({
+            userId: bidderId,
             type: "OUTBID",
             entityId: listing.id,
-            title: "You were outbid",
-            message: `A higher bid was placed on ${listing.title}.`,
-            dedupeKey: `bid:outbid:${bid.id}:${previousBid.bidderId}`,
-          },
+            title: "New bid placed",
+            message: `Another buyer placed a higher bid on ${listing.title}.`,
+            dedupeKey: `bid:activity:${bid.id}:${bidderId}`,
+          })),
+          skipDuplicates: true,
         });
       }
       let automaticBid = null;
@@ -318,7 +317,14 @@ router.post("/:listingId/bids", requireAuth, requireRole("BUYER"), async (req, r
         automaticBid = await tx.bid.create({ data: { listingId: listing.id, bidderId: competingAutoBid.bidderId, amountPaise: automaticAmount } });
         await tx.listing.update({ where: { id: listing.id }, data: { currentBidPaise: automaticAmount } });
       }
-      return { bid, automaticBid, sellerId: listing.sellerId, outbidUserId: previousBid?.bidderId, auctionEndsAt: extension, duplicate: false };
+      return {
+        bid,
+        automaticBid,
+        sellerId: listing.sellerId,
+        outbidUserIds: otherBidders.map(({ bidderId }) => bidderId),
+        auctionEndsAt: extension,
+        duplicate: false,
+      };
     });
     if (!result.duplicate) {
       req.app.get("io")?.to(`auction:${req.params.listingId}`).emit("auction:bid", {
@@ -341,13 +347,13 @@ router.post("/:listingId/bids", requireAuth, requireRole("BUYER"), async (req, r
         title: "New bid received",
         listingId: req.params.listingId,
       });
-      if (result.outbidUserId) {
-        req.app.get("io")?.to(`user:${result.outbidUserId}`).emit("notification:new", {
+      result.outbidUserIds.forEach((userId) => {
+        req.app.get("io")?.to(`user:${userId}`).emit("notification:new", {
           type: "OUTBID",
-          title: "You were outbid",
+          title: "New bid placed",
           listingId: req.params.listingId,
         });
-      }
+      });
     }
     res.status(result.duplicate ? 200 : 201).json({ success: true, duplicate: result.duplicate, data: { id: result.bid.id, amount: result.bid.amountPaise / 100, auctionEndsAt: result.auctionEndsAt, createdAt: result.bid.createdAt } });
   } catch (error) {
