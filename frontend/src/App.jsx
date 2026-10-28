@@ -19,6 +19,20 @@ function authHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+function Countdown({ endsAt }) {
+  const [remaining, setRemaining] = useState(() => Math.max(new Date(endsAt).getTime() - Date.now(), 0));
+  useEffect(() => {
+    const timer = window.setInterval(() => setRemaining(Math.max(new Date(endsAt).getTime() - Date.now(), 0)), 1000);
+    return () => window.clearInterval(timer);
+  }, [endsAt]);
+  const totalSeconds = Math.floor(remaining / 1000);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return <span className={`countdown ${remaining < 30000 ? "countdown-urgent" : ""}`}>{remaining ? `${days ? `${days}d ` : ""}${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}` : "Closed"}</span>;
+}
+
 function AuthModal({ mode, onClose, onModeChange, onAuthenticated }) {
   const [form, setForm] = useState({ name: "", email: "", password: "", role: "BUYER" });
   const [error, setError] = useState("");
@@ -35,7 +49,11 @@ function AuthModal({ mode, onClose, onModeChange, onAuthenticated }) {
       onAuthenticated({ ...data.user, role: effectiveRole(data.user.role) }, data.token);
       onClose();
     } catch (requestError) {
-      setError(requestError.response?.data?.message ?? "Authentication failed. Please try again.");
+      setError(requestError.response?.data?.message ?? (
+        requestError.response
+          ? "Authentication failed. Please try again."
+          : "The backend server is unavailable. Start the backend on port 5000 and try again."
+      ));
     } finally {
       setBusy(false);
     }
@@ -113,16 +131,22 @@ function Marketplace({ user, onLogin }) {
 }
 
 function ListingCard({ listing }) {
-  return <article className="item-card"><div className="item-image lavender"><span className="item-emoji">📦</span><span className="condition-badge">{listing.condition}</span></div><div className="item-details"><span className="item-category">{listing.category}</span><h3>{listing.title}</h3><div className="item-meta"><span>Ends {new Date(listing.auctionEndsAt).toLocaleDateString()}</span><span>{listing.bids} bids</span></div><div className="item-footer"><div><span className="price-label">Current bid</span><strong className="item-price">₹{listing.currentBid.toLocaleString("en-IN")}</strong></div><Link className="bid-button" to={`/listings/${listing.id}`}>View auction →</Link></div></div></article>;
+  const image = listing.images?.[0]?.url;
+  return <article className="item-card"><div className="item-image lavender">{image ? <img src={image} alt="" /> : <span className="item-emoji">📦</span>}<span className="condition-badge">{listing.condition}</span></div><div className="item-details"><span className="item-category">{listing.category}</span><h3>{listing.title}</h3><div className="item-meta"><span><Countdown endsAt={listing.auctionEndsAt} /></span><span>{listing.bids} bids</span></div><div className="item-footer"><div><span className="price-label">Current bid</span><strong className="item-price">₹{listing.currentBid.toLocaleString("en-IN")}</strong></div><Link className="bid-button" to={`/listings/${listing.id}`}>View auction →</Link></div></div></article>;
 }
 
 function ListingDetail({ user, onLogin }) {
   const { listingId } = useParams();
   const [listing, setListing] = useState(null);
   const [bid, setBid] = useState("");
+  const [maxBid, setMaxBid] = useState("");
+  const [questions, setQuestions] = useState([]);
+  const [question, setQuestion] = useState("");
+  const [answerDrafts, setAnswerDrafts] = useState({});
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   useEffect(() => { api.get(`/listings/${listingId}`).then(({ data }) => setListing(data.data)).catch(() => setError("Listing not found.")); }, [listingId]);
+  useEffect(() => { api.get(`/listings/${listingId}/questions`).then(({ data }) => setQuestions(data.data)).catch(() => {}); }, [listingId]);
   useEffect(() => {
     if (!listingId || !user) return undefined;
     const socket = io(API_URL, { auth: { token: localStorage.getItem("campusbid_token") } });
@@ -130,6 +154,32 @@ function ListingDetail({ user, onLogin }) {
     socket.on("auction:bid", (event) => {
       if (event.listingId === listingId) {
         setListing((current) => current ? { ...current, currentBid: event.amount, minimumNextBid: event.amount + current.minimumIncrement, bids: current.bids + 1 } : current);
+        if (event.auctionEndsAt) setListing((current) => current ? { ...current, auctionEndsAt: event.auctionEndsAt } : current);
+      }
+      async function placeAutoBid(event) {
+        event.preventDefault();
+        if (!user) return onLogin();
+        try {
+          const { data } = await api.post(`/listings/${listingId}/auto-bid`, { maxAmount: maxBid }, { headers: authHeaders() });
+          setMaxBid("");
+          setMessage(`Automatic bidding is active up to ₹${data.data.maxAmount.toLocaleString("en-IN")}.`);
+          setListing((current) => current ? { ...current, currentBid: data.data.amount, minimumNextBid: data.data.amount + current.minimumIncrement, auctionEndsAt: data.data.auctionEndsAt } : current);
+        } catch (requestError) { setError(requestError.response?.data?.message ?? "Automatic bidding could not be enabled."); }
+      }
+      async function askQuestion(event) {
+        event.preventDefault();
+        try {
+          const { data } = await api.post(`/listings/${listingId}/questions`, { body: question }, { headers: authHeaders() });
+          setQuestions((current) => [...current, data.data]);
+          setQuestion("");
+        } catch (requestError) { setError(requestError.response?.data?.message ?? "Question could not be posted."); }
+      }
+      async function answerQuestion(id) {
+        try {
+          const { data } = await api.patch(`/questions/${id}`, { answer: answerDrafts[id] }, { headers: authHeaders() });
+          setQuestions((current) => current.map((item) => item.id === id ? data.data : item));
+          setAnswerDrafts((current) => ({ ...current, [id]: "" }));
+        } catch (requestError) { setError(requestError.response?.data?.message ?? "Answer could not be saved."); }
       }
     });
     return () => { socket.emit("auction:leave", listingId); socket.disconnect(); };
@@ -148,14 +198,20 @@ function ListingDetail({ user, onLogin }) {
   if (!listing) return <main className="section"><p>Loading listing...</p></main>;
   const isBuyer = effectiveRole(user?.role) === "BUYER";
   const image = listing.images?.[0]?.url;
-  return <main className="detail-page section"><Link to="/">← Back to marketplace</Link><div className="detail-layout"><div className="detail-image">{image ? <img src={image} alt={listing.title} /> : "📦"}</div><div><span className="eyebrow">{listing.category} · {listing.condition}</span><h1>{listing.title}</h1><p className="detail-description">{listing.description}</p><p>Listed by {listing.seller?.name ?? "Campus seller"}</p><div className="detail-price"><span>Current highest bid</span><strong>₹{listing.currentBid.toLocaleString("en-IN")}</strong><small>Minimum next bid: ₹{listing.minimumNextBid.toLocaleString("en-IN")}</small></div>{isBuyer ? <form className="bid-form" onSubmit={placeBid}><input required inputMode="decimal" placeholder={`At least ₹${listing.minimumNextBid}`} value={bid} onChange={(event) => setBid(event.target.value)} /><button className="button button-primary">Place manual bid</button></form> : <div className="bid-login-prompt">{user ? "Seller accounts cannot place bids." : "Log in as a buyer to place a manual bid."}</div>}{message && <p className="success-message">{message}</p>}{error && <p className="form-error">{error}</p>}<p className="auction-note">Fixed deadline: {new Date(listing.auctionEndsAt).toLocaleString()}</p></div></div></main>;
+  return <main className="detail-page section"><Link to="/">← Back to marketplace</Link><div className="detail-layout"><div><div className="detail-image">{image ? <img src={image} alt={listing.title} /> : "📦"}</div>{listing.images?.length > 1 && <div className="detail-thumbnails">{listing.images.map((item) => <img key={item.id} src={item.url} alt="" />)}</div>}</div><div><span className="eyebrow">{listing.category} · {listing.condition}</span><h1>{listing.title}</h1><p className="detail-description">{listing.description}</p><p>Listed by {listing.seller?.name ?? "Campus seller"}</p><div className="auction-countdown"><span>Time remaining</span><strong><Countdown endsAt={listing.auctionEndsAt} /></strong></div><div className="detail-price"><span>Current highest bid</span><strong>₹{listing.currentBid.toLocaleString("en-IN")}</strong><small>Minimum next bid: ₹{listing.minimumNextBid.toLocaleString("en-IN")}</small></div>{isBuyer ? <><form className="bid-form" onSubmit={placeBid}><input required inputMode="decimal" placeholder={`At least ₹${listing.minimumNextBid}`} value={bid} onChange={(event) => setBid(event.target.value)} /><button className="button button-primary">Place manual bid</button></form><form className="auto-bid-form" onSubmit={placeAutoBid}><label>Set an automatic maximum<input required inputMode="decimal" placeholder="e.g. 1800" value={maxBid} onChange={(event) => setMaxBid(event.target.value)} /></label><button className="button button-outline">Enable auto-bidding</button></form></> : <div className="bid-login-prompt">{user ? "Seller accounts cannot place bids." : "Log in as a buyer to place a manual bid."}</div>}{message && <p className="success-message">{message}</p>}{error && <p className="form-error">{error}</p>}<p className="auction-note">Valid bids in the final 30 seconds extend the auction by 60 seconds.</p></div></div><section className="questions-panel"><div className="section-heading"><div><span className="eyebrow">ASK BEFORE YOU BID</span><h2>Questions & answers</h2><p>Ask about condition, pickup, or anything else relevant to this item.</p></div></div>{user && <form className="question-form" onSubmit={askQuestion}><input required minLength="5" maxLength="500" placeholder="Ask the seller a clear question..." value={question} onChange={(event) => setQuestion(event.target.value)} /><button className="button button-primary">Post question</button></form>}<div className="question-list">{questions.length ? questions.map((item) => <article className="question-card" key={item.id}><strong>{item.author.name}</strong><p>{item.body}</p>{item.answer ? <div className="answer"><b>Seller answer</b><p>{item.answer}</p></div> : listing.seller?.id === user?.id && <div className="answer-form"><input placeholder="Write an answer..." value={answerDrafts[item.id] ?? ""} onChange={(event) => setAnswerDrafts((current) => ({ ...current, [item.id]: event.target.value }))} /><button className="button button-outline" onClick={() => answerQuestion(item.id)}>Answer</button></div>}</article>) : <p className="muted">No questions yet. Be the first to ask.</p>}</div></section></main>;
 }
 
 function CreateListing() {
   const navigate = useNavigate();
   const [form, setForm] = useState({ title: "", description: "", category: categories[0], condition: "Good", startingPrice: "", minimumIncrement: "", auctionEndsAt: "" });
   const [files, setFiles] = useState([]);
+  const [previews, setPreviews] = useState([]);
   const [error, setError] = useState("");
+  function chooseFiles(event) {
+    const selected = Array.from(event.target.files ?? []).slice(0, 6);
+    setFiles(selected);
+    setPreviews(selected.map((file) => URL.createObjectURL(file)));
+  }
   async function submit(event) {
     event.preventDefault();
     try {
@@ -170,7 +226,7 @@ function CreateListing() {
       navigate("/dashboard");
     } catch (requestError) { setError(requestError.response?.data?.message ?? "Listing could not be created."); }
   }
-  return <main className="section form-page"><span className="eyebrow">SELLER WORKSPACE</span><h1>Create a listing</h1><p>Give another student a useful second life for your item.</p><form className="listing-form" onSubmit={submit}><label>Title<input required value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} /></label><label>Description<textarea required minLength={10} value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label><div className="form-row"><label>Category<select value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })}>{categories.map((category) => <option key={category}>{category}</option>)}</select></label><label>Condition<select value={form.condition} onChange={(event) => setForm({ ...form, condition: event.target.value })}>{["New", "Like New", "Good", "Fair"].map((condition) => <option key={condition}>{condition}</option>)}</select></label></div><div className="form-row"><label>Starting price (₹)<input required inputMode="decimal" value={form.startingPrice} onChange={(event) => setForm({ ...form, startingPrice: event.target.value })} /></label><label>Minimum increment (₹)<input required inputMode="decimal" value={form.minimumIncrement} onChange={(event) => setForm({ ...form, minimumIncrement: event.target.value })} /></label></div><label>Auction ends<input required type="datetime-local" value={form.auctionEndsAt} onChange={(event) => setForm({ ...form, auctionEndsAt: event.target.value })} /></label><label>Listing images<input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => setFiles(Array.from(event.target.files ?? []).slice(0, 6))} /><small>{files.length ? `${files.length} image(s) selected` : "Optional: JPEG, PNG, or WebP up to 5 MB each."}</small></label>{error && <p className="form-error">{error}</p>}<button className="button button-primary">Publish listing</button></form></main>;
+  return <main className="section form-page"><span className="eyebrow">SELLER WORKSPACE</span><h1>Create a listing</h1><p>Give another student a useful second life for your item.</p><form className="listing-form" onSubmit={submit}><label>Title<input required value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} /></label><label>Description<textarea required minLength={10} value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label><div className="form-row"><label>Category<select value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })}>{categories.map((category) => <option key={category}>{category}</option>)}</select></label><label>Condition<select value={form.condition} onChange={(event) => setForm({ ...form, condition: event.target.value })}>{["New", "Like New", "Good", "Fair"].map((condition) => <option key={condition}>{condition}</option>)}</select></label></div><div className="form-row"><label>Starting price (₹)<input required inputMode="decimal" value={form.startingPrice} onChange={(event) => setForm({ ...form, startingPrice: event.target.value })} /></label><label>Minimum increment (₹)<input required inputMode="decimal" value={form.minimumIncrement} onChange={(event) => setForm({ ...form, minimumIncrement: event.target.value })} /></label></div><label>Auction ends<input required type="datetime-local" value={form.auctionEndsAt} onChange={(event) => setForm({ ...form, auctionEndsAt: event.target.value })} /></label><label>Listing images<input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={chooseFiles} /><small>{files.length ? `${files.length} image(s) selected` : "Optional: JPEG, PNG, or WebP up to 5 MB each."}</small></label>{previews.length > 0 && <div className="upload-preview-grid">{previews.map((src) => <img key={src} src={src} alt="Selected listing preview" />)}</div>}{error && <p className="form-error">{error}</p>}<button className="button button-primary">Publish listing</button></form></main>;
 }
 
 function Transactions() {
@@ -203,6 +259,24 @@ function Profile() {
   }
 
   return <main className="section form-page"><span className="eyebrow">YOUR ACCOUNT</span><h1>Profile</h1>{profile && <form className="listing-form" onSubmit={save}><label>Name<input value={name} onChange={(event) => setName(event.target.value)} /></label><label>Email<input value={profile.email} readOnly /></label><label>Role<input value={profile.role} readOnly /></label><button className="button button-primary">Save profile</button>{message && <p className="success-message">{message}</p>}</form>}</main>;
+}
+
+function SavedSearches() {
+  const [searches, setSearches] = useState([]);
+  const [form, setForm] = useState({ name: "", query: "", category: "", maxPrice: "" });
+  const [error, setError] = useState("");
+  async function load() {
+    try { const { data } = await api.get("/saved-searches", { headers: authHeaders() }); setSearches(data.data); } catch { setError("Saved searches could not be loaded."); }
+  }
+  useEffect(() => { load(); }, []);
+  async function save(event) {
+    event.preventDefault();
+    try { await api.post("/saved-searches", form, { headers: authHeaders() }); setForm({ name: "", query: "", category: "", maxPrice: "" }); load(); } catch (requestError) { setError(requestError.response?.data?.message ?? "Saved search could not be created."); }
+  }
+  async function remove(id) {
+    try { await api.delete(`/saved-searches/${id}`, { headers: authHeaders() }); setSearches((current) => current.filter((item) => item.id !== id)); } catch (requestError) { setError(requestError.response?.data?.message ?? "Saved search could not be deleted."); }
+  }
+  return <main className="section form-page"><span className="eyebrow">NEVER MISS WHAT YOU NEED</span><h1>Saved searches</h1><p>Save a need once and keep it ready for the next matching campus listing.</p><form className="saved-search-form" onSubmit={save}><input required placeholder="Search name, e.g. Scientific calculator" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /><input placeholder="Words to match" value={form.query} onChange={(event) => setForm({ ...form, query: event.target.value })} /><select value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })}><option value="">Any category</option>{categories.map((category) => <option key={category}>{category}</option>)}</select><input inputMode="decimal" placeholder="Max price ₹" value={form.maxPrice} onChange={(event) => setForm({ ...form, maxPrice: event.target.value })} /><button className="button button-primary">Save search</button></form>{error && <p className="form-error">{error}</p>}<div className="saved-search-list">{searches.map((item) => <article className="saved-search-card" key={item.id}><div><strong>{item.name}</strong><p>{item.query || "Any item"} · {item.category || "Any category"}{item.maxPricePaise ? ` · Up to ₹${(item.maxPricePaise / 100).toLocaleString("en-IN")}` : ""}</p></div><button className="button button-outline" onClick={() => remove(item.id)}>Remove</button></article>)}{!searches.length && <div className="empty-state"><span>⌕</span><h3>No saved searches yet</h3><p>Create one for the things you are waiting to find.</p></div>}</div></main>;
 }
 
 function AdminConsole() {
@@ -242,7 +316,7 @@ function App() {
   const navigate = useNavigate();
   function authenticated(nextUser, token) { const normalizedUser = { ...nextUser, role: effectiveRole(nextUser.role) }; setUser(normalizedUser); localStorage.setItem("campusbid_user", JSON.stringify(normalizedUser)); localStorage.setItem("campusbid_token", token); navigate("/dashboard"); }
   function logout() { setUser(null); localStorage.removeItem("campusbid_user"); localStorage.removeItem("campusbid_token"); navigate("/"); }
-  return <div className="app"><header className="navbar"><Link className="brand" to="/"><span className="brand-icon">C</span>Campus<span className="brand-highlight">Bid</span></Link><nav className="nav-links"><Link to="/">Browse items</Link>{user && <Link to="/dashboard">Dashboard</Link>}{user && <Link to="/transactions">Transactions</Link>}{user && <Link to="/notifications">Notifications</Link>}{user && <Link to="/profile">Profile</Link>}{user?.role === "ADMIN" && <Link to="/admin">Admin</Link>}</nav><div className="nav-actions">{user ? <><span className="nav-user">{user.name} · {user.role}</span>{(user.role === "SELLER" || user.role === "ADMIN") && <Link className="button button-outline" to="/listings/new">+ Sell an item</Link>}<button className="button button-primary" onClick={logout}>Log out</button></> : <button className="button button-primary" onClick={() => setAuthMode("login")}>Log in</button>}</div></header><Routes><Route path="/" element={<Marketplace user={user} onLogin={() => setAuthMode("login")} />} /><Route path="/listings/:listingId" element={<ListingDetail user={user} onLogin={() => setAuthMode("login")} />} /><Route path="/listings/new" element={<Protected user={user} roles={["SELLER", "ADMIN"]}><CreateListing /></Protected>} /><Route path="/dashboard" element={<Protected user={user}><RoleDashboard user={user} onBrowse={() => navigate("/")} onCreateListing={() => navigate("/listings/new")} /></Protected>} /><Route path="/transactions" element={<Protected user={user}><Transactions /></Protected>} /><Route path="/notifications" element={<Protected user={user}><Notifications /></Protected>} /><Route path="/profile" element={<Protected user={user}><Profile /></Protected>} /><Route path="/admin" element={<Protected user={user} roles={["ADMIN"]}><AdminConsole /></Protected>} /><Route path="*" element={<main className="section"><h1>Page not found</h1><Link to="/">Return to marketplace</Link></main>} /></Routes><footer className="footer"><span>CampusBid · Fixed-deadline campus auctions</span><span>Payments and delivery are coordinated separately by users.</span></footer>{authMode && <AuthModal mode={authMode} onClose={() => setAuthMode(null)} onModeChange={setAuthMode} onAuthenticated={authenticated} />}</div>;
+  return <div className="app"><header className="navbar"><Link className="brand" to="/"><span className="brand-icon">C</span>Campus<span className="brand-highlight">Bid</span></Link><nav className="nav-links"><Link to="/">Browse items</Link>{user && <Link to="/dashboard">Dashboard</Link>}{user && <Link to="/transactions">Transactions</Link>}{user && <Link to="/notifications">Notifications</Link>}{user?.role === "BUYER" && <Link to="/saved-searches">Saved searches</Link>}{user && <Link to="/profile">Profile</Link>}{user?.role === "ADMIN" && <Link to="/admin">Admin</Link>}</nav><div className="nav-actions">{user ? <><span className="nav-user">{user.name} · {user.role}</span>{(user.role === "SELLER" || user.role === "ADMIN") && <Link className="button button-outline" to="/listings/new">+ Sell an item</Link>}<button className="button button-primary" onClick={logout}>Log out</button></> : <button className="button button-primary" onClick={() => setAuthMode("login")}>Log in</button>}</div></header><Routes><Route path="/" element={<Marketplace user={user} onLogin={() => setAuthMode("login")} />} /><Route path="/listings/:listingId" element={<ListingDetail user={user} onLogin={() => setAuthMode("login")} />} /><Route path="/listings/new" element={<Protected user={user} roles={["SELLER", "ADMIN"]}><CreateListing /></Protected>} /><Route path="/dashboard" element={<Protected user={user}><RoleDashboard user={user} onBrowse={() => navigate("/")} onCreateListing={() => navigate("/listings/new")} /></Protected>} /><Route path="/transactions" element={<Protected user={user}><Transactions /></Protected>} /><Route path="/notifications" element={<Protected user={user}><Notifications /></Protected>} /><Route path="/saved-searches" element={<Protected user={user} roles={["BUYER"]}><SavedSearches /></Protected>} /><Route path="/profile" element={<Protected user={user}><Profile /></Protected>} /><Route path="/admin" element={<Protected user={user} roles={["ADMIN"]}><AdminConsole /></Protected>} /><Route path="*" element={<main className="section"><h1>Page not found</h1><Link to="/">Return to marketplace</Link></main>} /></Routes><footer className="footer"><span>CampusBid · Fixed-deadline campus auctions</span><span>Payments and delivery are coordinated separately by users.</span></footer>{authMode && <AuthModal mode={authMode} onClose={() => setAuthMode(null)} onModeChange={setAuthMode} onAuthenticated={authenticated} />}</div>;
 }
 
 function Notifications() {

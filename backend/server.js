@@ -14,6 +14,7 @@ const transactionRoutes = require("./routes/transactionRoutes");
 const userRoutes = require("./routes/userRoutes");
 const adminRoutes = require("./routes/adminRoutes");
 const uploadRoutes = require("./routes/uploadRoutes");
+const discoveryRoutes = require("./routes/discoveryRoutes");
 const { configureSocket } = require("./services/socketService");
 const { startAuctionWorker } = require("./services/auctionWorker");
 const path = require("path");
@@ -44,6 +45,7 @@ app.use("/api/transactions", transactionRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/uploads", uploadRoutes);
+app.use("/api", discoveryRoutes);
 
 // Basic API health-check endpoint.
 app.get("/api/health", (req, res) => {

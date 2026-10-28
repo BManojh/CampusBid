@@ -191,6 +191,40 @@ router.delete("/:listingId", requireAuth, requireRole("SELLER", "ADMIN"), async 
   }
 });
 
+router.post("/:listingId/auto-bid", requireAuth, requireRole("BUYER"), async (req, res, next) => {
+  try {
+    const maxPaise = parsePaise(req.body.maxAmount);
+    if (!maxPaise || maxPaise <= 0) return res.status(400).json({ message: "Enter a valid maximum bid." });
+    const prisma = await getPrisma();
+    const result = await prisma.$transaction(async (tx) => {
+      const listing = await tx.listing.findUnique({ where: { id: req.params.listingId } });
+      if (!listing || listing.status !== "OPEN" || listing.auctionEndsAt.getTime() <= Date.now()) throw Object.assign(new Error("This auction is closed."), { status: 409 });
+      if (listing.sellerId === req.user.id) throw Object.assign(new Error("Sellers cannot bid on their own listings."), { status: 403 });
+      const minimum = (listing.currentBidPaise ?? listing.startingPricePaise) + (listing.currentBidPaise === null ? 0 : listing.minimumIncrementPaise);
+      if (maxPaise < minimum) throw Object.assign(new Error(`Maximum bid must be at least ₹${(minimum / 100).toFixed(2)}.`), { status: 409 });
+      const autoBid = await tx.autoBid.upsert({
+        where: { listingId_bidderId: { listingId: listing.id, bidderId: req.user.id } },
+        create: { listingId: listing.id, bidderId: req.user.id, maxPaise },
+        update: { maxPaise, active: true },
+      });
+      const amountPaise = Math.min(maxPaise, minimum);
+      const bid = await tx.bid.create({ data: { listingId: listing.id, bidderId: req.user.id, amountPaise } });
+      const extension = listing.auctionEndsAt.getTime() - Date.now() <= 30_000 ? new Date(Date.now() + 60_000) : listing.auctionEndsAt;
+      await tx.listing.update({ where: { id: listing.id }, data: { currentBidPaise: amountPaise, auctionEndsAt: extension } });
+      return { autoBid, bid, auctionEndsAt: extension };
+    });
+    req.app.get("io")?.to(`auction:${req.params.listingId}`).emit("auction:bid", {
+      listingId: req.params.listingId,
+      amount: result.bid.amountPaise / 100,
+      auctionEndsAt: result.auctionEndsAt,
+      createdAt: result.bid.createdAt,
+    });
+    res.status(201).json({ success: true, data: { amount: result.bid.amountPaise / 100, maxAmount: result.autoBid.maxPaise / 100, auctionEndsAt: result.auctionEndsAt } });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.post("/:listingId/bids", requireAuth, requireRole("BUYER"), async (req, res, next) => {
   try {
     const amountPaise = parsePaise(req.body.amount);
@@ -217,7 +251,8 @@ router.post("/:listingId/bids", requireAuth, requireRole("BUYER"), async (req, r
         if (duplicate) return { bid: duplicate, duplicate: true };
       }
       const bid = await tx.bid.create({ data: { listingId: listing.id, bidderId: req.user.id, amountPaise, idempotencyKey } });
-      await tx.listing.update({ where: { id: listing.id }, data: { currentBidPaise: amountPaise } });
+      const extension = listing.auctionEndsAt.getTime() - Date.now() <= 30_000 ? new Date(Date.now() + 60_000) : listing.auctionEndsAt;
+      await tx.listing.update({ where: { id: listing.id }, data: { currentBidPaise: amountPaise, auctionEndsAt: extension } });
       await tx.notification.create({
         data: {
           userId: listing.sellerId,
@@ -240,14 +275,34 @@ router.post("/:listingId/bids", requireAuth, requireRole("BUYER"), async (req, r
           },
         });
       }
-      return { bid, sellerId: listing.sellerId, outbidUserId: previousBid?.bidderId, duplicate: false };
+      let automaticBid = null;
+      const competingAutoBid = await tx.autoBid.findFirst({
+        where: { listingId: listing.id, bidderId: { not: req.user.id }, active: true, maxPaise: { gte: amountPaise + listing.minimumIncrementPaise } },
+        orderBy: [{ maxPaise: "desc" }, { createdAt: "asc" }],
+      });
+      if (competingAutoBid) {
+        const automaticAmount = Math.min(competingAutoBid.maxPaise, amountPaise + listing.minimumIncrementPaise);
+        automaticBid = await tx.bid.create({ data: { listingId: listing.id, bidderId: competingAutoBid.bidderId, amountPaise: automaticAmount } });
+        await tx.listing.update({ where: { id: listing.id }, data: { currentBidPaise: automaticAmount } });
+      }
+      return { bid, automaticBid, sellerId: listing.sellerId, outbidUserId: previousBid?.bidderId, auctionEndsAt: extension, duplicate: false };
     });
     if (!result.duplicate) {
       req.app.get("io")?.to(`auction:${req.params.listingId}`).emit("auction:bid", {
         listingId: req.params.listingId,
         amount: result.bid.amountPaise / 100,
+        auctionEndsAt: result.auctionEndsAt,
         createdAt: result.bid.createdAt,
       });
+      if (result.automaticBid) {
+        req.app.get("io")?.to(`auction:${req.params.listingId}`).emit("auction:bid", {
+          listingId: req.params.listingId,
+          amount: result.automaticBid.amountPaise / 100,
+          auctionEndsAt: result.auctionEndsAt,
+          createdAt: result.automaticBid.createdAt,
+          automatic: true,
+        });
+      }
       req.app.get("io")?.to(`user:${result.sellerId}`).emit("notification:new", {
         type: "SYSTEM",
         title: "New bid received",
@@ -261,7 +316,7 @@ router.post("/:listingId/bids", requireAuth, requireRole("BUYER"), async (req, r
         });
       }
     }
-    res.status(result.duplicate ? 200 : 201).json({ success: true, duplicate: result.duplicate, data: { id: result.bid.id, amount: result.bid.amountPaise / 100, createdAt: result.bid.createdAt } });
+    res.status(result.duplicate ? 200 : 201).json({ success: true, duplicate: result.duplicate, data: { id: result.bid.id, amount: result.bid.amountPaise / 100, auctionEndsAt: result.auctionEndsAt, createdAt: result.bid.createdAt } });
   } catch (error) {
     next(error);
   }
