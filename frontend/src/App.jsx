@@ -1,75 +1,7 @@
 
-import { useMemo, useState } from "react";
+import axios from "axios";
+import { useEffect, useMemo, useState } from "react";
 import "./App.css";
-
-const initialItems = [
-  {
-    id: 1,
-    title: "Engineering Mathematics",
-    category: "Books",
-    condition: "Good",
-    price: 180,
-    bids: 4,
-    timeLeft: "2h 30m",
-    emoji: "📚",
-    color: "lavender",
-  },
-  {
-    id: 2,
-    title: "Mountain Bicycle",
-    category: "Cycles",
-    condition: "Used - Good",
-    price: 2500,
-    bids: 8,
-    timeLeft: "5h 15m",
-    emoji: "🚲",
-    color: "mint",
-  },
-  {
-    id: 3,
-    title: "Scientific Calculator",
-    category: "Electronics",
-    condition: "Like New",
-    price: 650,
-    bids: 6,
-    timeLeft: "1h 10m",
-    emoji: "🧮",
-    color: "peach",
-  },
-  {
-    id: 4,
-    title: "Wireless Headphones",
-    category: "Electronics",
-    condition: "Good",
-    price: 900,
-    bids: 3,
-    timeLeft: "8h 20m",
-    emoji: "🎧",
-    color: "blue",
-  },
-  {
-    id: 5,
-    title: "College Backpack",
-    category: "Accessories",
-    condition: "Good",
-    price: 350,
-    bids: 2,
-    timeLeft: "3h 45m",
-    emoji: "🎒",
-    color: "peach",
-  },
-  {
-    id: 6,
-    title: "Data Structures Textbook",
-    category: "Books",
-    condition: "Like New",
-    price: 220,
-    bids: 5,
-    timeLeft: "6h 00m",
-    emoji: "📖",
-    color: "mint",
-  },
-];
 
 const categories = [
   "All Items",
@@ -77,13 +9,40 @@ const categories = [
   "Cycles",
   "Electronics",
   "Accessories",
+  "Calculators",
 ];
 
 function App() {
-  const [items] = useState(initialItems);
+  const [items, setItems] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("All Items");
   const [sortBy, setSortBy] = useState("ending");
+
+  useEffect(() => {
+    async function loadListings() {
+      try {
+        const response = await axios.get("http://localhost:5000/api/listings");
+        setItems(
+          response.data.data.map((listing) => ({
+            ...listing,
+            price: listing.currentBid ?? listing.startingPrice,
+            bids: listing.bidCount ?? 0,
+            timeLeft: listing.timeLeft ?? "Auction time unavailable",
+            emoji: listing.emoji ?? "📦",
+            color: listing.color ?? "lavender",
+          }))
+        );
+      } catch {
+        setError("Unable to load marketplace items. Please try again.");
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    loadListings();
+  }, []);
 
   const filteredItems = useMemo(() => {
     const result = items.filter((item) => {
@@ -240,7 +199,13 @@ function App() {
           </div>
 
           <div className="item-grid">
-            {filteredItems.map((item) => (
+            {isLoading && <p>Loading marketplace items...</p>}
+
+            {!isLoading && error && <p role="alert">{error}</p>}
+
+            {!isLoading &&
+              !error &&
+              filteredItems.map((item) => (
               <article className="item-card" key={item.id}>
                 <div className={`item-image ${item.color}`}>
                   <span className="item-emoji" role="img" aria-label={item.category}>
@@ -281,10 +246,10 @@ function App() {
                   </div>
                 </div>
               </article>
-            ))}
+              ))}
           </div>
 
-          {filteredItems.length === 0 && (
+          {!isLoading && !error && filteredItems.length === 0 && (
             <div className="empty-state">
               <span>🔎</span>
               <h3>No matching items</h3>
