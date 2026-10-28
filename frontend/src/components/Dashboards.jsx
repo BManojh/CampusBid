@@ -34,7 +34,7 @@ function ActivityList({ title, empty, children }) {
   return <div className="dashboard-activity"><h3>{title}</h3>{children || <p className="muted">{empty}</p>}</div>;
 }
 
-export function RoleDashboard({ user, onBrowse, onCreateListing, onTransactions, onNotifications }) {
+export function RoleDashboard({ user, onBrowse, onListings, onCreateListing, onTransactions, onNotifications }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
 
@@ -48,7 +48,7 @@ export function RoleDashboard({ user, onBrowse, onCreateListing, onTransactions,
     return <AdminDashboard user={user} data={data} error={error} loading={loading} onBrowse={onBrowse} onTransactions={onTransactions} />;
   }
   if (role === "SELLER") {
-    return <SellerDashboard user={user} data={data} error={error} loading={loading} onBrowse={onBrowse} onCreateListing={onCreateListing} onTransactions={onTransactions} />;
+    return <SellerDashboard user={user} data={data} error={error} loading={loading} onBrowse={onBrowse} onListings={onListings} onCreateListing={onCreateListing} onTransactions={onTransactions} />;
   }
   return <BuyerDashboard user={user} data={data} error={error} loading={loading} onBrowse={onBrowse} onTransactions={onTransactions} onNotifications={onNotifications} />;
 }
@@ -68,7 +68,7 @@ function BuyerDashboard({ user, data, error, loading, onBrowse, onTransactions, 
   </DashboardShell>;
 }
 
-function SellerDashboard({ user, data, error, loading, onBrowse, onCreateListing, onTransactions }) {
+function SellerDashboard({ user, data, error, loading, onBrowse, onListings, onCreateListing, onTransactions }) {
   const listings = data?.listings ?? [];
   const transactions = data?.transactions ?? [];
   return <DashboardShell user={user} eyebrow="SELLER WORKSPACE" intro="Turn useful items into value for another student on campus." label="Seller" accent="seller">
@@ -76,7 +76,7 @@ function SellerDashboard({ user, data, error, loading, onBrowse, onCreateListing
     <div className="dashboard-summary"><Stat value={loading ? "…" : listings.filter((listing) => listing.status === "OPEN").length} label="Active listings" /><Stat value={loading ? "…" : listings.reduce((sum, listing) => sum + listing._count.bids, 0)} label="Total bids" /><Stat value={loading ? "…" : transactions.length} label="Sales & handovers" /></div>
     <div className="dashboard-grid">
       <DashboardAction icon="+" title="Create a listing" description="Add an item, set a starting price, and open an auction." action="Add an item" onAction={onCreateListing} />
-      <DashboardAction icon="◫" title="My listings" description="Manage active auctions and watch incoming bids." action="View listings" onAction={onBrowse} />
+      <DashboardAction icon="◫" title="My listings" description="Manage active auctions and watch incoming bids." action="View listings" onAction={onListings} />
       <DashboardAction icon="✓" title="Sales & handovers" description="Review winning bids and coordinate collection." action="View transactions" onAction={onTransactions} />
     </div>
     <ActivityList title="Your listings" empty="You have not created any listings yet.">{listings.slice(0, 5).map((listing) => <div className="activity-row" key={listing.id}><Link to={`/listings/${listing.id}`}>{listing.title}</Link><strong>{listing._count.bids} bids</strong><small>{listing.status}</small></div>)}</ActivityList>
