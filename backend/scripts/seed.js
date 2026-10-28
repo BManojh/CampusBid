@@ -8,6 +8,7 @@ async function seed() {
     create: {
       name: "CampusBid Demo Seller",
       email: "seller@campusbid.local",
+      role: "SELLER",
       passwordHash: "development-only-placeholder",
     },
   });

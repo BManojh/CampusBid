@@ -8,8 +8,14 @@ datasource db {
 }
 
 enum UserRole {
-  STUDENT
+  BUYER
+  SELLER
   ADMIN
+}
+
+enum AccountStatus {
+  ACTIVE
+  SUSPENDED
 }
 
 enum ListingStatus {
@@ -37,12 +43,20 @@ enum NotificationType {
   SYSTEM
 }
 
+enum SellerDecision {
+  PENDING
+  ACCEPTED
+  REJECTED
+  EXPIRED
+}
+
 model User {
   id                 String         @id @default(uuid())
   name               String
   email              String         @unique
   passwordHash       String
-  role               UserRole       @default(STUDENT)
+  role               UserRole       @default(BUYER)
+  accountStatus      AccountStatus  @default(ACTIVE)
   createdAt          DateTime       @default(now())
   updatedAt          DateTime       @updatedAt
   listings           Listing[]      @relation("SellerListings")
@@ -50,6 +64,8 @@ model User {
   buyerTransactions  Transaction[]  @relation("BuyerTransactions")
   sellerTransactions Transaction[]  @relation("SellerTransactions")
   notifications      Notification[]
+  auctionResults     AuctionResult[] @relation("AuctionWinner")
+  auditLogs           AuditLog[]     @relation("AuditActor")
 }
 
 model Listing {
@@ -71,6 +87,8 @@ model Listing {
   bids                  Bid[]
   winnerBid             Bid?          @relation("WinningBid", fields: [winnerBidId], references: [id])
   transaction           Transaction?
+  images                ListingImage[]
+  auctionResult         AuctionResult?
 
   @@index([status, auctionEndsAt])
   @@index([category, status])
@@ -83,12 +101,15 @@ model Bid {
   bidderId    String
   amountPaise Int
   createdAt   DateTime @default(now())
+  idempotencyKey String?
   listing     Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
   bidder      User     @relation(fields: [bidderId], references: [id])
   winningFor  Listing? @relation("WinningBid")
+  auctionWinningResult AuctionResult? @relation("AuctionWinningBid")
 
   @@index([listingId, amountPaise, createdAt])
   @@index([bidderId])
+  @@unique([bidderId, idempotencyKey])
 }
 
 model Transaction {
@@ -97,6 +118,10 @@ model Transaction {
   buyerId          String
   sellerId         String
   status           TransactionStatus @default(PENDING)
+  sellerDecision   SellerDecision    @default(PENDING)
+  decisionDeadline DateTime?
+  buyerConfirmedAt DateTime?
+  sellerConfirmedAt DateTime?
   sellerResponseAt DateTime?
   handoverAt       DateTime?
   completedAt      DateTime?
@@ -114,11 +139,49 @@ model Notification {
   id        String           @id @default(uuid())
   userId    String
   type      NotificationType
+  entityId  String?
   title     String
   message   String
   readAt    DateTime?
-  createdAt DateTime         @default(now())
+  createdAt DateTime          @default(now())
+  dedupeKey String?           @unique
   user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, readAt, createdAt])
+}
+
+model ListingImage {
+  id         String   @id @default(uuid())
+  listingId  String
+  url        String
+  publicId   String?
+  createdAt  DateTime @default(now())
+  listing    Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@index([listingId])
+}
+
+model AuctionResult {
+  id              String   @id @default(uuid())
+  listingId       String   @unique
+  winningBidId    String?  @unique
+  winnerId        String?
+  finalizedAt     DateTime @default(now())
+  hasWinner       Boolean  @default(false)
+  listing         Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  winningBid      Bid?     @relation("AuctionWinningBid", fields: [winningBidId], references: [id])
+  winner          User?    @relation("AuctionWinner", fields: [winnerId], references: [id])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  actorId     String
+  action      String
+  entityType  String
+  entityId    String
+  reason      String?
+  createdAt   DateTime @default(now())
+  actor       User     @relation("AuditActor", fields: [actorId], references: [id])
+
+  @@index([entityType, entityId, createdAt])
 }
